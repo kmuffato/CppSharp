@@ -837,25 +837,7 @@ namespace CppSharp.Generators.CSharp
 
         private void GenerateVariableSetter(Variable var)
         {
-            TypePrinter.PushContext(TypePrinterContextKind.Native);
-
-            var location = $@"CppSharp.SymbolResolver.ResolveSymbol(""{
-                GetLibraryOf(var)}"", ""{var.Mangled}"")";
-
-            string ptr = Generator.GeneratedIdentifier("ptr");
-            Type varType = var.Type.Desugar();
-            var arrayType = varType as ArrayType;
-            var @class = var.Namespace as Class;
-            var isRefTypeArray = arrayType != null && @class != null && @class.IsRefType;
-            if (isRefTypeArray)
-                WriteLine($@"var {ptr} = {
-                    (arrayType.Type.IsPrimitiveType(PrimitiveType.Char) &&
-                     arrayType.QualifiedType.Qualifiers.IsConst ?
-                        string.Empty : "(byte*)")}{location};");
-            else
-                WriteLine($"var {ptr} = ({varType}*){location};");
-
-            TypePrinter.PopContext();
+            string ptr = ResolveVariable(var);
 
             var param = new Parameter
             {
@@ -867,7 +849,7 @@ namespace CppSharp.Generators.CSharp
             {
                 Parameter = param,
                 ArgName = param.Name,
-                ReturnType = new QualifiedType(varType)
+                ReturnType = var.QualifiedType
             };
             ctx.PushMarshalKind(MarshalKind.Variable);
 
@@ -885,6 +867,41 @@ namespace CppSharp.Generators.CSharp
 
             if (ctx.HasCodeBlock)
                 UnindentAndWriteCloseBrace();
+        }
+
+        private string ResolveVariable(Variable var)
+        {
+            TypePrinter.PushContext(TypePrinterContextKind.Native);
+
+            string mangled = var.Mangled[0] == '_' &&
+                var.Mangled.Substring(1) == var.OriginalName &&
+                Context.ParserOptions.TargetTriple.IsMacOS() ?
+                // the symbol name passed to dlsym() must NOT be prepended with an underscore
+                // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dlsym.3.html
+                var.Mangled.TrimStart('_') : var.Mangled;
+
+            var location = $@"CppSharp.SymbolResolver.ResolveSymbol(""{
+                GetLibraryOf(var)}"", ""{mangled}"")";
+
+            var arrayType = var.Type as ArrayType;
+            string ptr = Generator.GeneratedIdentifier("ptr");
+            if (arrayType != null && var.Namespace is Class @class && @class.IsRefType)
+            {
+                WriteLine($@"var {ptr} = {
+                   (arrayType.Type.IsPrimitiveType(PrimitiveType.Char) &&
+                    arrayType.QualifiedType.Qualifiers.IsConst ?
+                       string.Empty : "(byte*)")}{location};");
+            }
+            else
+            {
+                TypePrinter.PushMarshalKind(MarshalKind.ReturnVariableArray);
+                var varReturnType = var.Type.Visit(TypePrinter);
+                TypePrinter.PopMarshalKind();
+                WriteLine($"var {ptr} = ({varReturnType}*){location};");
+            }
+
+            TypePrinter.PopContext();
+            return ptr;
         }
 
         private void GenerateFunctionSetter(Class @class, Property property)
@@ -1125,42 +1142,18 @@ namespace CppSharp.Generators.CSharp
 
         private void GenerateVariableGetter(Variable var)
         {
-            TypePrinter.PushContext(TypePrinterContextKind.Native);
-
-            string library = GetLibraryOf(var);
-            var location = $"CppSharp.SymbolResolver.ResolveSymbol(\"{library}\", \"{var.Mangled}\")";
-
-            var ptr = Generator.GeneratedIdentifier("ptr");
-
-            Type varType = var.Type.Desugar();
-            var arrayType = varType as ArrayType;
-            var elementType = arrayType?.Type.Desugar();
-            var @class = var.Namespace as Class;
-            var isRefTypeArray = arrayType != null && @class != null && @class.IsRefType;
-            if (isRefTypeArray)
-            {
-                string cast = elementType.IsPrimitiveType(PrimitiveType.Char) &&
-                    arrayType.QualifiedType.Qualifiers.IsConst
-                        ? string.Empty : "(byte*)";
-                WriteLine($"var {ptr} = {cast}{location};");
-            }
-            else
-            {
-                TypePrinter.PushMarshalKind(MarshalKind.ReturnVariableArray);
-                var varReturnType = varType.Visit(TypePrinter);
-                TypePrinter.PopMarshalKind();
-                WriteLine($"var {ptr} = ({varReturnType}*){location};");
-            }
-
-            TypePrinter.PopContext();
+            string ptr = ResolveVariable(var);
 
             var ctx = new CSharpMarshalContext(Context, CurrentIndentation)
             {
                 ArgName = var.Name,
-                ReturnType = new QualifiedType(var.Type)
+                ReturnType = var.QualifiedType
             };
             ctx.PushMarshalKind(MarshalKind.ReturnVariableArray);
 
+            var arrayType = var.Type.Desugar() as ArrayType;
+            var isRefTypeArray = arrayType != null && var.Namespace is Class @class && @class.IsRefType;
+            var elementType = arrayType?.Type.Desugar();
             if (!isRefTypeArray && elementType == null)
                 ctx.ReturnVarName = $"*{ptr}";
             else if (elementType == null || elementType.IsPrimitiveType() ||

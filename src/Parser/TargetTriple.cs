@@ -13,7 +13,7 @@ namespace CppSharp.Parser
                 parts.Contains("win32") || parts.Contains("win64");
         }
 
-        public static bool IsMacOS(string targetTriple)
+        public static bool IsMacOS(this string targetTriple)
         {
             var parts = targetTriple.Split('-');
             return parts.Contains("apple") ||
